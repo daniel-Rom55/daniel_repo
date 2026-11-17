@@ -1,441 +1,575 @@
-import math
-import random
-import pygame
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zombie Forest 3D</title>
+  <style>
+    html, body {
+      margin: 0;
+      background: #0a0f12;
+      color: white;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      cursor: crosshair;
+    }
+    .hud {
+      position: fixed;
+      left: 20px;
+      top: 20px;
+      z-index: 10;
+      font-size: 18px;
+      font-weight: bold;
+      line-height: 1.5;
+      text-shadow: 1px 1px 2px #000;
+    }
+    .message {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 9;
+      font-size: 32px;
+      font-weight: bold;
+      display: none;
+      text-shadow: 2px 2px 5px #000;
+    }
+    .controls {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 10;
+      font-size: 14px;
+      opacity: 0.9;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud" id="hud"></div>
+  <div class="message" id="message"></div>
+  <div class="controls">
+    WASD / flechas: mover<br>
+    Ratón: mirar<br>
+    Click izquierdo: disparar<br>
+    1/2: cambiar arma<br>
+    R: recargar / reiniciar<br>
+    ESC: salir
+  </div>
 
-pygame.init()
-pygame.mouse.set_visible(False)
-pygame.event.set_grab(True)
+  <canvas id="game"></canvas>
 
-WIDTH, HEIGHT = 1280, 720
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Zombie Forest 3D")
-clock = pygame.time.Clock()
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const hud = document.getElementById("hud");
+    const message = document.getElementById("message");
 
-MAP = [
-    "111111111111111",
-    "100000000000001",
-    "101111011111101",
-    "100100000000001",
-    "101101111011101",
-    "100001000010001",
-    "101101011110101",
-    "100000010000001",
-    "101111010111101",
-    "100000000000001",
-    "101011111011101",
-    "100010000010001",
-    "101110111110101",
-    "100000000000001",
-    "111111111111111",
-]
+    const MAP = [
+      "111111111111111",
+      "100000000000001",
+      "101111011111101",
+      "100100000000001",
+      "101101111011101",
+      "100001000010001",
+      "101101011110101",
+      "100000010000001",
+      "101111010111101",
+      "100000000000001",
+      "101011111011101",
+      "100010000010001",
+      "101110111110101",
+      "100000000000001",
+      "111111111111111"
+    ];
 
-FOV = math.radians(70)
-MAX_DEPTH = 18.0
+    const FOV = Math.PI / 3.2;
+    const MAX_DEPTH = 18;
 
-weapons = {
-    "pistol": {"damage": 35, "cooldown": 0.38, "reload": 1.1, "mag_size": 12},
-    "rifle": {"damage": 18, "cooldown": 0.10, "reload": 1.7, "mag_size": 30},
-}
+    const weapons = {
+      pistol: { damage: 35, cooldown: 0.38, reload: 1.1, mag: 12, reserve: 48 },
+      rifle: { damage: 18, cooldown: 0.10, reload: 1.7, mag: 30, reserve: 90 }
+    };
 
-player = {
-    "x": 2.5,
-    "y": 2.5,
-    "angle": 0.0,
-    "health": 100.0,
-    "weapon": "pistol",
-    "ammo": {
-        "pistol": {"mag": 12, "reserve": 48},
-        "rifle": {"mag": 30, "reserve": 90},
-    },
-    "reload_timer": 0.0,
-    "last_shot": 0.0,
-    "score": 0,
-}
+    const player = {
+      x: 2.5,
+      y: 2.5,
+      angle: 0,
+      health: 100,
+      weapon: "pistol",
+      reloadTimer: 0,
+      lastShot: 0,
+      score: 0
+    };
 
-wave = 1
-zombies = []
-respawn_timer = 0.0
-game_over = False
+    let zombies = [];
+    let wave = 1;
+    let gameOver = false;
+    let respawnTimer = 0;
 
-def clamp(v, lo, hi):
-    return max(lo, min(v, hi))
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resize);
+    resize();
 
-def normalize_angle(a):
-    while a < -math.pi:
-        a += 2 * math.pi
-    while a > math.pi:
-        a -= 2 * math.pi
-    return a
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(value, max));
+    }
 
-def is_wall(x, y):
-    if x < 0 or y < 0:
-        return True
-    ix = int(x)
-    iy = int(y)
-    if iy < 0 or iy >= len(MAP):
-        return True
-    if ix < 0 or ix >= len(MAP[0]):
-        return True
-    return MAP[iy][ix] == "1"
+    function normalizeAngle(a) {
+      while (a < -Math.PI) a += Math.PI * 2;
+      while (a > Math.PI) a -= Math.PI * 2;
+      return a;
+    }
 
-def cast_ray(angle):
-    dist = 0.0
-    while dist < MAX_DEPTH:
-        x = player["x"] + math.cos(angle) * dist
-        y = player["y"] + math.sin(angle) * dist
-        if is_wall(x, y):
-            return dist, x, y
-        dist += 0.02
-    return MAX_DEPTH, None, None
+    function isWall(x, y) {
+      if (x < 0 || y < 0) return true;
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      if (iy < 0 || iy >= MAP.length) return true;
+      if (ix < 0 || ix >= MAP[0].length) return true;
+      return MAP[iy][ix] === "1";
+    }
 
-def spawn_zombies(count):
-    items = []
-    for _ in range(count):
-        tries = 0
-        while tries < 200:
-            x = random.uniform(1.5, 13.5)
-            y = random.uniform(1.5, 13.5)
-            if abs(x - player["x"]) > 3.0 and abs(y - player["y"]) > 3.0 and not is_wall(x, y):
-                items.append({
-                    "x": x,
-                    "y": y,
-                    "hp": 100,
-                    "speed": random.uniform(0.8, 1.5),
-                    "alive": True,
-                    "attack_cooldown": 0.0,
-                    "hit_flash": 0.0,
-                })
-                break
-            tries += 1
-    return items
+    function castRay(angle) {
+      let dist = 0;
+      while (dist < MAX_DEPTH) {
+        const x = player.x + Math.cos(angle) * dist;
+        const y = player.y + Math.sin(angle) * dist;
+        if (isWall(x, y)) return { dist, x, y };
+        dist += 0.02;
+      }
+      return { dist: MAX_DEPTH, x: null, y: null };
+    }
 
-def reset_game():
-    global zombies, wave, respawn_timer, game_over
-    player["x"] = 2.5
-    player["y"] = 2.5
-    player["angle"] = 0.0
-    player["health"] = 100.0
-    player["weapon"] = "pistol"
-    player["score"] = 0
-    player["reload_timer"] = 0.0
-    player["last_shot"] = 0.0
-    for w in weapons:
-        player["ammo"][w]["mag"] = weapons[w]["mag_size"]
-        player["ammo"][w]["reserve"] = 48 if w == "pistol" else 90
-    wave = 1
-    zombies = spawn_zombies(5)
-    respawn_timer = 0.0
-    game_over = False
+    function spawnZombies(count) {
+      const newZombies = [];
+      let tries = 0;
 
-def reload_weapon():
-    if player["reload_timer"] > 0:
-        return
-    w = player["weapon"]
-    ammo = player["ammo"][w]
-    if ammo["mag"] >= weapons[w]["mag_size"]:
-        return
-    if ammo["reserve"] <= 0:
-        return
-    player["reload_timer"] = weapons[w]["reload"]
+      while (newZombies.length < count && tries < 500) {
+        const x = 1.5 + Math.random() * 12;
+        const y = 1.5 + Math.random() * 12;
+        if (Math.hypot(x - player.x, y - player.y) > 3.0 && !isWall(x, y)) {
+          newZombies.push({
+            x, y,
+            hp: 100,
+            speed: 0.8 + Math.random() * 0.7,
+            alive: true,
+            attackCooldown: 0,
+            hitFlash: 0
+          });
+        }
+        tries++;
+      }
 
-def finish_reload():
-    w = player["weapon"]
-    ammo = player["ammo"][w]
-    needed = weapons[w]["mag_size"] - ammo["mag"]
-    if needed > 0 and ammo["reserve"] > 0:
-        taken = min(needed, ammo["reserve"])
-        ammo["mag"] += taken
-        ammo["reserve"] -= taken
+      return newZombies;
+    }
 
-def can_shoot():
-    now = pygame.time.get_ticks() / 1000.0
-    return now - player["last_shot"] >= weapons[player["weapon"]]["cooldown"]
+    function resetGame() {
+      player.x = 2.5;
+      player.y = 2.5;
+      player.angle = 0;
+      player.health = 100;
+      player.weapon = "pistol";
+      player.reloadTimer = 0;
+      player.lastShot = 0;
+      player.score = 0;
 
-def fire():
-    global game_over
-    if game_over:
-        return
-    w = player["weapon"]
-    ammo = player["ammo"][w]
-    if player["reload_timer"] > 0:
-        return
-    if ammo["mag"] <= 0:
-        reload_weapon()
-        return
-    if not can_shoot():
-        return
+      weapons.pistol.mag = 12;
+      weapons.pistol.reserve = 48;
+      weapons.rifle.mag = 30;
+      weapons.rifle.reserve = 90;
 
-    ammo["mag"] -= 1
-    player["last_shot"] = pygame.time.get_ticks() / 1000.0
+      wave = 1;
+      respawnTimer = 0;
+      zombies = spawnZombies(5);
+      gameOver = false;
+      message.style.display = "none";
+    }
 
-    mouse_x, mouse_y = pygame.mouse.get_pos()
-    aim_x = (mouse_x - WIDTH / 2) / WIDTH
-    aim_y = (mouse_y - HEIGHT / 2) / HEIGHT
-    aim_angle = player["angle"] + aim_x * FOV * 1.3
+    function reloadWeapon() {
+      if (player.reloadTimer > 0) return;
+      const w = weapons[player.weapon];
+      if (w.mag >= w.reserve && w.reserve === 0) return;
+      if (w.mag >= 12 && player.weapon === "pistol") return;
+      if (w.mag >= 30 && player.weapon === "rifle") return;
+      const ammo = w.mag;
+      const reserve = w.reserve;
+      if (reserve <= 0) return;
+      player.reloadTimer = weapons[player.weapon].reload;
+    }
 
-    best_target = None
-    best_diff = 999.0
+    function finishReload() {
+      const w = weapons[player.weapon];
+      const maxMag = player.weapon === "pistol" ? 12 : 30;
 
-    for z in zombies:
-        if not z["alive"]:
-            continue
-        dx = z["x"] - player["x"]
-        dy = z["y"] - player["y"]
-        dist = math.hypot(dx, dy)
-        if dist > 8.0:
-            continue
-        ang = math.atan2(dy, dx)
-        diff = abs(normalize_angle(ang - aim_angle))
-        if diff < best_diff:
-            best_target = z
-            best_diff = diff
+      const needed = maxMag - w.mag;
+      if (needed > 0 && w.reserve > 0) {
+        const used = Math.min(needed, w.reserve);
+        w.mag += used;
+        w.reserve -= used;
+      }
+    }
 
-    if best_target is not None and best_diff < 0.14:
-        best_target["hp"] -= weapons[w]["damage"]
-        best_target["hit_flash"] = 0.18
-        if best_target["hp"] <= 0:
-            best_target["alive"] = False
-            player["score"] += 10
-            if not any(z["alive"] for z in zombies):
-                return
+    function canShoot() {
+      const now = performance.now() / 1000;
+      return now - player.lastShot >= weapons[player.weapon].cooldown;
+    }
 
-def update_player(dt, keys):
-    global game_over
-    if game_over:
-        return
+    function fire() {
+      if (gameOver) return;
 
-    move = 0.0
-    strafe = 0.0
+      const w = weapons[player.weapon];
+      if (player.reloadTimer > 0) return;
+      if (w.mag <= 0) {
+        reloadWeapon();
+        return;
+      }
+      if (!canShoot()) return;
 
-    if keys[pygame.K_w]:
-        move += 1.0
-    if keys[pygame.K_s]:
-        move -= 1.0
-    if keys[pygame.K_d]:
-        strafe += 1.0
-    if keys[pygame.K_a]:
-        strafe -= 1.0
+      w.mag -= 1;
+      player.lastShot = performance.now() / 1000;
 
-    speed = 2.9 * dt
-    forward_x = math.cos(player["angle"]) * move * speed
-    forward_y = math.sin(player["angle"]) * move * speed
-    side_x = math.cos(player["angle"] + math.pi / 2) * strafe * speed
-    side_y = math.sin(player["angle"] + math.pi / 2) * strafe * speed
+      const aimX = (canvas.width / 2 - canvas.width / 2) / canvas.width; // centro
+      const aimY = (canvas.height / 2 - canvas.height / 2) / canvas.height; // centro
+      const targetAngle = player.angle + (aimX * FOV * 1.3);
 
-    nx = player["x"] + forward_x + side_x
-    ny = player["y"] + forward_y + side_y
+      let bestZombie = null;
+      let bestDiff = Infinity;
 
-    if not is_wall(nx, player["y"]):
-        player["x"] = nx
-    if not is_wall(player["x"], ny):
-        player["y"] = ny
+      for (const z of zombies) {
+        if (!z.alive) continue;
+        const dx = z.x - player.x;
+        const dy = z.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 8) continue;
 
-    rel = pygame.mouse.get_rel()
-    player["angle"] += rel[0] * 0.0032
+        const ang = Math.atan2(dy, dx);
+        const diff = Math.abs(normalizeAngle(ang - targetAngle));
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestZombie = z;
+        }
+      }
 
-    if player["reload_timer"] > 0:
-        player["reload_timer"] -= dt
-        if player["reload_timer"] <= 0:
-            finish_reload()
+      if (bestZombie && bestDiff < 0.14) {
+        bestZombie.hp -= weapons[player.weapon].damage;
+        bestZombie.hitFlash = 0.18;
+        if (bestZombie.hp <= 0) {
+          bestZombie.alive = false;
+          player.score += 10;
+        }
+      }
 
-def update_zombies(dt):
-    global respawn_timer, wave, game_over
-    for z in zombies:
-        if not z["alive"]:
-            continue
-        z["hit_flash"] = max(0.0, z["hit_flash"] - dt)
+      if (w.mag === 0) {
+        reloadWeapon();
+      }
+    }
 
-        dx = player["x"] - z["x"]
-        dy = player["y"] - z["y"]
-        dist = math.hypot(dx, dy)
-        if dist < 0.001:
-            dist = 0.001
+    function updatePlayer(dt) {
+      if (gameOver) return;
 
-        if dist > 1.0:
-            step = z["speed"] * dt
-            nx = z["x"] + (dx / dist) * step
-            ny = z["y"] + (dy / dist) * step
-            if not is_wall(nx, z["y"]):
-                z["x"] = nx
-            if not is_wall(z["x"], ny):
-                z["y"] = ny
+      let move = 0;
+      let strafe = 0;
 
-        if dist < 1.1:
-            z["attack_cooldown"] -= dt
-            if z["attack_cooldown"] <= 0:
-                player["health"] -= 13.0
-                z["attack_cooldown"] = 0.9
+      const keys = {
+        w: !!keysDown["KeyW"], a: !!keysDown["KeyA"], s: !!keysDown["KeyS"], d: !!keysDown["KeyD"],
+        up: !!keysDown["ArrowUp"], down: !!keysDown["ArrowDown"], left: !!keysDown["ArrowLeft"], right: !!keysDown["ArrowRight"]
+      };
 
-    if not any(z["alive"] for z in zombies):
-        if respawn_timer <= 0:
-            respawn_timer = 2.5
-        respawn_timer -= dt
-        if respawn_timer <= 0:
-            wave += 1
-            zombies.extend(spawn_zombies(4 + wave))
-            respawn_timer = 0.0
+      if (keys.w || keys.up) move += 1;
+      if (keys.s || keys.down) move -= 1;
+      if (keys.d || keys.right) strafe += 1;
+      if (keys.a || keys.left) strafe -= 1;
 
-    if player["health"] <= 0:
-        game_over = True
+      const speed = 2.8 * dt;
 
-def draw_hud():
-    font = pygame.font.SysFont("arial", 26, bold=True)
-    small = pygame.font.SysFont("arial", 22)
+      const forwardX = Math.cos(player.angle) * move * speed;
+      const forwardY = Math.sin(player.angle) * move * speed;
+      const sideX = Math.cos(player.angle + Math.PI / 2) * strafe * speed;
+      const sideY = Math.sin(player.angle + Math.PI / 2) * strafe * speed;
 
-    health = font.render(f"HP: {int(max(0, player['health']))}", True, (255, 95, 95))
-    weapon_name = font.render(f"Arma: {player['weapon'].upper()}", True, (255, 255, 255))
-    ammo = font.render(
-        f"Munición: {player['ammo'][player['weapon']]['mag']} / {player['ammo'][player['weapon']]['reserve']}",
-        True, (255, 255, 255),
-    )
-    score = font.render(f"Puntuación: {player['score']}", True, (255, 210, 100))
-    wave_text = font.render(f"Ola: {wave}", True, (170, 245, 170))
+      const nx = player.x + forwardX + sideX;
+      const ny = player.y + forwardY + sideY;
 
-    screen.blit(health, (30, 30))
-    screen.blit(weapon_name, (30, 65))
-    screen.blit(ammo, (30, 100))
-    screen.blit(score, (30, 135))
-    screen.blit(wave_text, (30, 170))
+      if (!isWall(nx, player.y)) player.x = nx;
+      if (!isWall(player.x, ny)) player.y = ny;
 
-    cx, cy = WIDTH // 2, HEIGHT // 2
-    pygame.draw.line(screen, (255, 255, 255), (cx - 12, cy), (cx + 12, cy), 2)
-    pygame.draw.line(screen, (255, 255, 255), (cx, cy - 12), (cx, cy + 12), 2)
+      if (player.reloadTimer > 0) {
+        player.reloadTimer -= dt;
+        if (player.reloadTimer <= 0) {
+          finishReload();
+        }
+      }
+    }
 
-    if player["reload_timer"] > 0:
-        reload_text = font.render("RECARGANDO...", True, (255, 220, 100))
-        screen.blit(reload_text, (WIDTH // 2 - 120, HEIGHT - 70))
+    function updateZombies(dt) {
+      let aliveCount = 0;
 
-    if game_over:
-        big = pygame.font.SysFont("arial", 52, bold=True)
-        txt = big.render("DERROTADO", True, (255, 70, 70))
-        screen.blit(txt, (WIDTH // 2 - 170, HEIGHT // 2 - 30))
-        msg = small.render("Presiona R para reiniciar", True, (255, 255, 255))
-        screen.blit(msg, (WIDTH // 2 - 140, HEIGHT // 2 + 40))
+      for (const z of zombies) {
+        if (!z.alive) continue;
+        aliveCount++;
 
-def draw_world():
-    # Fondo del bosque
-    sky = (75, 120, 150)
-    horizon = (40, 75, 55)
-    ground = (22, 30, 18)
-    pygame.draw.rect(screen, sky, (0, 0, WIDTH, HEIGHT // 2))
-    pygame.draw.rect(screen, horizon, (0, HEIGHT // 2 - 20, WIDTH, 25))
-    pygame.draw.rect(screen, ground, (0, HEIGHT // 2, WIDTH, HEIGHT // 2))
+        z.hitFlash = Math.max(0, z.hitFlash - dt);
 
-    # Árboles del fondo (silhouette)
-    for i in range(15):
-        x = (i * 100 + 30) % (WIDTH + 100)
-        y = 250 + (i % 3) * 25
-        pygame.draw.rect(screen, (20, 30, 18), (x, y + 25, 16, 80))
-        pygame.draw.circle(screen, (24, 70, 38), (x + 8, y), 28)
-        pygame.draw.circle(screen, (20, 90, 52), (x - 12, y + 10), 24)
-        pygame.draw.circle(screen, (18, 82, 42), (x + 18, y + 8), 26)
+        const dx = player.x - z.x;
+        const dy = player.y - z.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 0.001) dist = 0.001;
 
-    visible = []
-    for z in zombies:
-        if not z["alive"]:
-            continue
-        dx = z["x"] - player["x"]
-        dy = z["y"] - player["y"]
-        dist = math.hypot(dx, dy)
-        ang = math.atan2(dy, dx)
-        diff = normalize_angle(ang - player["angle"])
-        if abs(diff) < FOV * 0.9 and dist < MAX_DEPTH:
-            visible.append((dist, diff, z))
+        if (dist > 1.1) {
+          const step = z.speed * dt;
+          const nx = z.x + (dx / dist) * step;
+          const ny = z.y + (dy / dist) * step;
+          if (!isWall(nx, z.y)) z.x = nx;
+          if (!isWall(z.x, ny)) z.y = ny;
+        }
 
-    visible.sort(key=lambda v: v[0], reverse=True)
+        if (dist < 1.15) {
+          z.attackCooldown -= dt;
+          if (z.attackCooldown <= 0) {
+            player.health -= 13;
+            z.attackCooldown = 0.9;
+            if (player.health <= 0) {
+              player.health = 0;
+              gameOver = true;
+              message.textContent = "DERROTADO";
+              message.style.display = "block";
+            }
+          }
+        }
+      }
 
-    # Raycast del mapa
-    for col in range(0, WIDTH, 2):
-        ray_angle = player["angle"] - FOV / 2 + (col / WIDTH) * FOV
-        dist, hit_x, hit_y = cast_ray(ray_angle)
-        corrected = dist * math.cos(ray_angle - player["angle"])
-        if corrected <= 0.0001:
-            corrected = 0.0001
-        wall_h = clamp(HEIGHT / corrected, 30, HEIGHT * 2)
-        y = (HEIGHT - wall_h) / 2
-        shade = clamp(int(255 * (1 - corrected / MAX_DEPTH)), 35, 200)
-        color = (shade, int(shade * 0.8), int(shade * 0.55))
-        pygame.draw.rect(screen, color, (col, y, 2, wall_h))
+      if (aliveCount === 0) {
+        if (respawnTimer <= 0) respawnTimer = 2.5;
+        respawnTimer -= dt;
+        if (respawnTimer <= 0) {
+          wave += 1;
+          zombies = zombies.concat(spawnZombies(4 + wave));
+          respawnTimer = 0;
+        }
+      }
+    }
 
-    # Sprites de zombies
-    for dist, diff, z in visible:
-        sprite_x = WIDTH / 2 + (diff / FOV) * WIDTH
-        size = clamp((HEIGHT / dist) * 0.75, 20, 300)
-        sprite_y = HEIGHT / 2 + size * 0.12
+    function drawBackground() {
+      const sky = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.5);
+      sky.addColorStop(0, "#6ea8d8");
+      sky.addColorStop(1, "#d9d5b3");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, canvas.width, canvas.height / 2);
 
-        rect = pygame.Rect(
-            sprite_x - size * 0.25,
-            sprite_y - size * 0.9,
-            size * 0.5,
-            size * 1.5,
-        )
-        body_color = (20, 160, 90) if z["hit_flash"] <= 0 else (255, 110, 110)
-        pygame.draw.rect(screen, body_color, rect)
-        pygame.draw.circle(screen, (20, 20, 20), (int(sprite_x), int(sprite_y - size * 0.7)), int(size * 0.18))
-        pygame.draw.rect(screen, (255, 60, 60), (rect.x, rect.y - 8, rect.w * (z["hp"] / 100), 5))
+      const ground = ctx.createLinearGradient(0, canvas.height / 2, 0, canvas.height);
+      ground.addColorStop(0, "#2a3a2f");
+      ground.addColorStop(1, "#111811");
+      ctx.fillStyle = ground;
+      ctx.fillRect(0, canvas.height / 2, canvas.width, canvas.height / 2);
 
-def draw_minimap():
-    map_size = 180
-    sx = 20
-    sy = HEIGHT - map_size - 20
-    pygame.draw.rect(screen, (30, 30, 30), (sx, sy, map_size, map_size), 2)
+      // árboles de fondo
+      for (let i = 0; i < 22; i++) {
+        const x = (i * 120 + 30 + (wave * 10)) % (canvas.width + 120) - 50;
+        const y = 150 + (i % 4) * 30;
+        ctx.fillStyle = "#191d1a";
+        ctx.fillRect(x + 12, y + 25, 18, 90);
+        ctx.beginPath();
+        ctx.fillStyle = "#1d512f";
+        ctx.arc(x + 20, y, 32, 0, Math.PI * 2);
+        ctx.arc(x - 5, y + 12, 26, 0, Math.PI * 2);
+        ctx.arc(x + 38, y + 10, 28, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
 
-    cell = map_size / len(MAP)
-    for j, row in enumerate(MAP):
-        for i, ch in enumerate(row):
-            if ch == "1":
-                pygame.draw.rect(screen, (80, 80, 80), (sx + i * cell, sy + j * cell, cell, cell))
-    # jugador
-    px = sx + player["x"] * cell
-    py = sy + player["y"] * cell
-    pygame.draw.circle(screen, (80, 200, 255), (int(px), int(py)), 4)
-    # zombies
-    for z in zombies:
-        if z["alive"]:
-            zx = sx + z["x"] * cell
-            zy = sy + z["y"] * cell
-            pygame.draw.circle(screen, (220, 70, 70), (int(zx), int(zy)), 3)
+    function drawWorld() {
+      drawBackground();
 
-def main():
-    global zombies
-    reset_game()
+      const wallColors = [];
+      for (let col = 0; col < canvas.width; col += 2) {
+        const rayAngle = player.angle - FOV / 2 + (col / canvas.width) * FOV;
+        const hit = castRay(rayAngle);
+        const corrected = hit.dist * Math.cos(rayAngle - player.angle);
 
-    running = True
-    while running:
-        dt = clock.tick(60) / 1000.0
+        const wallHeight = clamp(canvas.height / corrected, 20, 2000);
+        const top = (canvas.height - wallHeight) / 2;
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                if event.key == pygame.K_1:
-                    player["weapon"] = "pistol"
-                if event.key == pygame.K_2:
-                    player["weapon"] = "rifle"
-                if event.key == pygame.K_r:
-                    if game_over:
-                        reset_game()
-                    else:
-                        reload_weapon()
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                fire()
+        let shade = clamp(255 * (1 - corrected / MAX_DEPTH), 35, 220);
+        const c = [
+          shade,
+          Math.round(shade * 0.78),
+          Math.round(shade * 0.55)
+        ];
+        ctx.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+        ctx.fillRect(col, top, 2, wallHeight);
 
-        keys = pygame.key.get_pressed()
-        if not game_over:
-            update_player(dt, keys)
-            update_zombies(dt)
+        wallColors.push({ col, top, wallHeight });
+      }
 
-        if game_over and keys[pygame.K_r]:
-            reset_game()
+      const visibles = [];
+      for (const z of zombies) {
+        if (!z.alive) continue;
+        const dx = z.x - player.x;
+        const dy = z.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        const diff = normalizeAngle(ang - player.angle);
 
-        draw_world()
-        draw_hud()
-        draw_minimap()
-        pygame.display.flip()
+        if (Math.abs(diff) < FOV * 0.9 && dist < MAX_DEPTH) {
+          visibles.push({ dist, diff, z });
+        }
+      }
 
-    pygame.quit()
+      visibles.sort((a, b) => b.dist - a.dist);
 
-if __name__ == "__main__":
-    main()
+      for (const { dist, diff, z } of visibles) {
+        const screenX = canvas.width / 2 + (diff / FOV) * canvas.width;
+        const size = clamp((canvas.height / dist) * 0.85, 20, 300);
+        const screenY = canvas.height / 2 + size * 0.12;
+
+        const rectW = size * 0.55;
+        const rectH = size * 1.5;
+        const rectX = screenX - rectW / 2;
+        const rectY = screenY - rectH * 0.8;
+
+        const bodyColor = z.hitFlash > 0 ? "#ff7d7d" : "#3ca96a";
+        ctx.fillStyle = bodyColor;
+        ctx.fillRect(rectX, rectY, rectW, rectH);
+
+        ctx.fillStyle = "#101010";
+        ctx.beginPath();
+        ctx.arc(screenX, screenY - size * 0.7, size * 0.18, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#ff4d4d";
+        ctx.fillRect(rectX, rectY - 10, rectW * (z.hp / 100), 6);
+      }
+    }
+
+    function drawMinimap() {
+      const size = 180;
+      const x = 20;
+      const y = canvas.height - size - 20;
+
+      ctx.strokeStyle = "rgba(255,255,255,0.7)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, size, size);
+
+      const cell = size / MAP[0].length;
+      for (let j = 0; j < MAP.length; j++) {
+        for (let i = 0; i < MAP[j].length; i++) {
+          if (MAP[j][i] === "1") {
+            ctx.fillStyle = "#6f6f6f";
+            ctx.fillRect(x + i * cell, y + j * cell, cell, cell);
+          }
+        }
+      }
+
+      ctx.fillStyle = "#5ec9ff";
+      ctx.beginPath();
+      ctx.arc(x + player.x * cell, y + player.y * cell, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (const z of zombies) {
+        if (z.alive) {
+          ctx.fillStyle = "#ff4d4d";
+          ctx.beginPath();
+          ctx.arc(x + z.x * cell, y + z.y * cell, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawHud() {
+      const weaponText = player.weapon.toUpperCase();
+      const ammo = weapons[player.weapon].mag;
+      const reserve = weapons[player.weapon].reserve;
+
+      hud.innerHTML = `
+        HP: ${Math.max(0, Math.round(player.health))}<br>
+        ARMA: ${weaponText}<br>
+        MUNICIÓ: ${ammo} / ${reserve}<br>
+        PUNTOS: ${player.score}<br>
+        OLA: ${wave}
+      `;
+
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2 - 12, canvas.height / 2);
+      ctx.lineTo(canvas.width / 2 + 12, canvas.height / 2);
+      ctx.moveTo(canvas.width / 2, canvas.height / 2 - 12);
+      ctx.lineTo(canvas.width / 2, canvas.height / 2 + 12);
+      ctx.stroke();
+
+      if (player.reloadTimer > 0) {
+        ctx.fillStyle = "rgba(255, 210, 100, 0.85)";
+        ctx.font = "bold 26px Arial";
+        ctx.fillText("RECARGANDO...", canvas.width / 2 - 130, canvas.height - 40);
+      }
+    }
+
+    const keysDown = {};
+
+    document.addEventListener("keydown", (e) => {
+      keysDown[e.code] = true;
+
+      if (e.code === "Digit1") player.weapon = "pistol";
+      if (e.code === "Digit2") player.weapon = "rifle";
+      if (e.code === "KeyR") {
+        if (gameOver) resetGame();
+        else reloadWeapon();
+      }
+    });
+
+    document.addEventListener("keyup", (e) => {
+      keysDown[e.code] = false;
+    });
+
+    canvas.addEventListener("mousedown", (e) => {
+      if (e.button === 0) fire();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (document.pointerLockElement === canvas) {
+        player.angle += e.movementX * 0.0025;
+      }
+    });
+
+    canvas.addEventListener("click", () => {
+      canvas.requestPointerLock();
+    });
+
+    resetGame();
+
+    let lastTime = performance.now();
+    function loop(now) {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+
+      if (!gameOver) {
+        updatePlayer(dt);
+        updateZombies(dt);
+      }
+
+      drawWorld();
+      drawMinimap();
+      drawHud();
+
+      if (gameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
